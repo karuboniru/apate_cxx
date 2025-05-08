@@ -1,7 +1,9 @@
 #include "mmapio.h"
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <print>
+#include <ranges>
 #include <span>
 using byte = unsigned char;
 
@@ -13,32 +15,26 @@ private:
 
 public:
   static int Reveal(const std::filesystem::path &path) {
-    auto filesize = std::filesystem::file_size(path);
-    mmapio<byte[]> maped_file(path.c_str(), true);
-    auto pos_header = filesize - maskLengthIndicatorLength;
-    auto maskHeadLength = byte2int(&maped_file[pos_header]);
-    std::span<byte, std::dynamic_extent> orig_head;
-    if (maskHeadLength <=
-        filesize - maskLengthIndicatorLength - maskHeadLength) {
-      auto offset = filesize - maskLengthIndicatorLength - maskHeadLength;
-      orig_head = std::span<byte, std::dynamic_extent>(&maped_file[offset],
-                                                       maskHeadLength);
-    } else {
-      auto offset = maskHeadLength;
-      auto length = filesize - maskLengthIndicatorLength - offset;
-      std::println("header length: {}", length);
-      orig_head =
-          std::span<byte, std::dynamic_extent>(&maped_file[offset], length);
-    }
-    auto newsize = filesize - maskHeadLength - maskLengthIndicatorLength;
+    const auto filesize = std::filesystem::file_size(path);
+    uintmax_t new_size{};
+    {
+      mmapio<byte[]> maped_file(path.c_str(), true);
+      const auto pos_header = filesize - maskLengthIndicatorLength;
+      const uintmax_t maskHeadLength = byte2int(&maped_file[pos_header]);
+      new_size = filesize - maskHeadLength - maskLengthIndicatorLength;
+      std::span<byte, std::dynamic_extent> orig_head(
+          &maped_file[std::max(maskHeadLength, new_size)],
+          std::min(maskHeadLength, new_size));
 
-    std::println("I am about to create file of size {} from size {} with "
-                 "header size: {}",
-                 newsize, filesize, orig_head.size());
-    for (size_t i = 0; i < orig_head.size(); i++) {
-      maped_file[i] = orig_head[orig_head.size() - 1 - i];
+      std::println("I am about to create file of size {} from size {} with "
+                   "header size: {}",
+                   new_size, filesize, orig_head.size());
+      for (auto &&[from, to] :
+           std::views::zip(orig_head | std::views::reverse, maped_file)) {
+        to = from;
+      }
     }
-    maped_file.truncate(newsize);
+    std::filesystem::resize_file(path, new_size);
     auto filename_remove_extension = path;
     filename_remove_extension.replace_extension("");
     std::println("{} -> {}", path.c_str(), filename_remove_extension.c_str());
